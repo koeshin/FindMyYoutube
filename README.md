@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FindMyYouTube: AI-Powered Deep Research & Video Curator
 
-## Getting Started
+**FindMyYouTube** is an intelligent agent that performs deep research on any topic and cures relevant YouTube videos. It utilizes **Google Gemini 1.5 Pro** for reasoning and writing, **Tavily API** for deep web search, and **YouTube** for video discovery.
 
-First, run the development server:
+## 🚀 Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+*   **Deep Research Agent**: Decomposes user queries into a multi-step research plan.
+*   **Comprehensive Reports**: Generates professional Markdown reports with citations.
+*   **Video Curation**: Finds and displays top 5 relevant YouTube videos with metadata.
+*   **Clean UI**: Dark-themed, distraction-free interface inspired by YouTube.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## ⚠️ Current Status (Work In Progress)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+*   **Status**: Alpha / Prototype
+*   **Testing**: logic has **not been fully tested** yet.
+*   **UI/UX**: The current interface is functional but **scheduled for major redesign and improvements**.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 🛠️ Stack
 
-## Learn More
+*   **Framework**: Next.js 14 (App Router)
+*   **AI Model**: Google Gemini 1.5 Pro (via `gemini-1.5-flash` or `pro`)
+*   **Search**: Tavily API (`@tavily/core`)
+*   **Styling**: Tailwind CSS
+*   **Markdown**: `react-markdown` + `@tailwindcss/typography`
 
-To learn more about Next.js, take a look at the following resources:
+## 📦 Getting Started
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1.  Clone the repository.
+2.  Install dependencies:
+    ```bash
+    npm install
+    ```
+3.  Set up environment variables in `.env.local`:
+    ```env
+    GEMINI_API_KEY=your_gemini_key
+    TAVILY_API_KEY=your_tavily_key
+    ```
+4.  Run the development server:
+    ```bash
+    npm run dev
+    ```
