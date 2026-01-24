@@ -2,6 +2,8 @@
 
 **FindMyYouTube** is an intelligent agent that performs deep research on any topic and cures relevant YouTube videos. It utilizes **Google Gemini 1.5 Pro** for reasoning and writing, **Tavily API** for deep web search, and **YouTube** for video discovery.
 
+![Architecture](assets/architecture.png)
+
 ## 🚀 Features
 
 *   **Deep Research Agent**: Decomposes user queries into a multi-step research plan.
