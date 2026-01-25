@@ -3,7 +3,20 @@ const nextConfig = {
     swcMinify: false,
     reactStrictMode: true,
     images: {
-        domains: ['i.ytimg.com', 'yt3.ggpht.com'],
+        remotePatterns: [
+            {
+                protocol: 'https',
+                hostname: '*.ytimg.com',
+            },
+            {
+                protocol: 'https',
+                hostname: '*.ggpht.com',
+            },
+            {
+                protocol: 'https',
+                hostname: 'i.ytimg.com',
+            },
+        ],
     },
 };
 

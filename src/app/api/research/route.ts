@@ -33,17 +33,20 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Gemini API Key not configured" }, { status: 500 });
         }
 
-        // Initialize Gemini with User Requested Model
+        // Initialize Gemini
         const genAI = new GoogleGenerativeAI(apiKey);
 
-        // Note: User requested "gemini-1.5-pro". Quota limits (429) may apply.
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+        // Note: User requested "gemini-3-flash" for everything.
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+
+        const today = new Date().toISOString().split('T')[0];
 
         // --- Step 1: Planner ---
         console.log("Step 1: Planning...");
         const planPrompt = `
         You are a Deep Research Planner.
         User Query: "${topic}"
+        Current Date: ${today}
         
         Goal: Decompose this query into a research plan.
         1. Generate 5 distinct, high-quality search queries for a search engine (Tavily) to gather comprehensive information.
@@ -57,8 +60,16 @@ export async function POST(req: Request) {
         `;
 
         const planResult = await model.generateContent(planPrompt);
-        const planText = planResult.response.text().replace(/```json/g, "").replace(/```/g, "").trim();
-        const plan = JSON.parse(planText);
+        const text = planResult.response.text();
+
+        // Robust JSON extraction
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+            console.error("Failed to parse JSON Plan:", text);
+            throw new Error("Invalid JSON format from Planner");
+        }
+
+        const plan = JSON.parse(jsonMatch[0]);
 
         console.log("Plan:", plan);
 
@@ -74,8 +85,8 @@ export async function POST(req: Request) {
             }).catch(e => ({ results: [], answer: "" }))
         );
 
-        // B. YouTube Search
-        const videoPromise = searchVideos(plan.video_keyword, 5);
+        // B. YouTube Search (Top 10 as requested)
+        const videoPromise = searchVideos(plan.video_keyword, 10);
 
         const [searchResults, videoResults] = await Promise.all([
             Promise.all(searchPromises),
@@ -83,22 +94,33 @@ export async function POST(req: Request) {
         ]);
 
         // Aggregate Context
-        let researchContext = "";
+        let researchContext = `Report Date: ${today}\n\n`;
+
+        // Add Plan to Context
+        researchContext += `=== RESEARCH STRATEGY ===\n`;
+        researchContext += `Search Queries: ${plan.search_queries.join(', ')}\n`;
+        researchContext += `Video Keyword: ${plan.video_keyword}\n\n`;
+
+        // Add Web Results
+        researchContext += `=== WEB SEARCH RESULTS ===\n`;
         searchResults.forEach((res: any, idx: number) => {
-            researchContext += `\n--- Search Query: ${plan.search_queries[idx]} ---\n`;
-            if (res.answer) researchContext += `Direct Answer: ${res.answer}\n`;
+            researchContext += `\n--- Query: ${plan.search_queries[idx]} ---\n`;
+            if (res.answer) researchContext += `AI Answer: ${res.answer}\n`;
             res.results.forEach((r: any) => {
                 researchContext += `Title: ${r.title}\nURL: ${r.url}\nContent: ${r.content}\n\n`;
             });
         });
 
-        // TRUNCATION: Critical for Free Tier Quotas
-        // Gemini 1.5 Flash Free Tier has limits on RPM and TPM. 
-        // Truncating to ~25k chars ensures we likely stay within the ~1M token limit but more importantly
-        // helps reduce the load for the per-minute limit if multiple requests happen.
-        if (researchContext.length > 25000) {
-            console.log(`Context too large (${researchContext.length}), truncating to 25k chars...`);
-            researchContext = researchContext.substring(0, 25000) + "\n...(Truncated for Quota Limits)...";
+        // Add Video Results to Context (Requested feature)
+        researchContext += `\n=== YOUTUBE VIDEO CONTEXT ===\n`;
+        videoResults.forEach((v: any) => {
+            researchContext += `Video Title: ${v.title}\nChannel: ${v.channel}\nPublished: ${v.uploadedAt}\nLink: ${v.url}\n\n`;
+        });
+
+        // TRUNCATION (Increased slightly as videos add text)
+        if (researchContext.length > 30000) {
+            console.log(`Context too large (${researchContext.length}), truncating to 30k chars...`);
+            researchContext = researchContext.substring(0, 30000) + "\n...(Truncated)...";
         }
 
         // --- Step 3: Writer ---
@@ -106,17 +128,26 @@ export async function POST(req: Request) {
         const writePrompt = `
         You are a detailed Research Analyst and Writer.
         User Query: "${topic}"
+        Date: ${today}
         
         Research Context:
         ${researchContext}
         
-        Task: Write a comprehensive, professional Markdown report based *only* on the context provided.
+        Task: Write a comprehensive, professional Markdown report.
         
-        Guidelines:
-        - Structure: Introduction, Key Findings (grouped logically), Technical/Market Analysis, Conclusion.
-        - Tone: Professional, Objective, Deep.
-        - **Citations**: You MUST cite your sources. Use [Title](URL) format inline or as footnotes.
-        - Length: Substantial and detailed.
+        Requirements:
+        1. **Header**: Start with a Metadata block (Date, Topic, Research Strategy Summary).
+        2. **Research Strategy**: Briefly explain the approach taken (the queries used) so the reader understands the scope.
+        3. **Integration**: You MUST integrate findings from BOTH the Web Search Results AND the YouTube Video Context.
+           - When citing a web page, use [Title](URL).
+           - When citing a video, use [Video: Title](URL).
+        4. **Structure**: 
+           - Executive Summary
+           - Key Findings (Grouped logically)
+           - Market/Technical Analysis
+           - **Video Highlights**: A dedicated section summarizing key insights derived specifically from the video list provided.
+           - Conclusion
+        5. **Length**: Detailed and substantial.
         
         Start immediately with the markdown content.
         `;

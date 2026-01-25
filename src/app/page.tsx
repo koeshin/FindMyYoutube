@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Search, Loader2, FileText, Youtube, PlayCircle, ExternalLink, Bot, Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import Image from "next/image";
@@ -29,13 +29,31 @@ export default function Home() {
   const [data, setData] = useState<ResearchResponse | null>(null);
   const [activeTab, setActiveTab] = useState<"report" | "videos">("report");
 
+  // Load persistence on mount
+  useEffect(() => {
+    const savedData = localStorage.getItem("researchData");
+    const savedTopic = localStorage.getItem("researchTopic");
+
+    if (savedTopic) setTopic(savedTopic);
+
+    if (savedData) {
+      try {
+        setData(JSON.parse(savedData));
+      } catch (e) {
+        console.error("Failed to parse saved data");
+      }
+    }
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topic.trim()) return;
 
     setLoading(true);
-    setData(null);
     setActiveTab("report");
+
+    // Save topic early
+    localStorage.setItem("researchTopic", topic);
 
     try {
       setStatusText("🧠 Analyzing Topic & Planning...");
@@ -52,10 +70,22 @@ export default function Home() {
       if (result.error) throw new Error(result.error);
 
       setData(result);
+      // Save full result
+      localStorage.setItem("researchData", JSON.stringify(result));
+
     } catch (error: any) {
       alert(`Research Failed: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleClear = () => {
+    if (confirm("Start a new search? Current results will be cleared.")) {
+      setData(null);
+      setTopic("");
+      localStorage.removeItem("researchData");
+      localStorage.removeItem("researchTopic");
     }
   };
 
@@ -105,6 +135,16 @@ export default function Home() {
               )}
             </div>
           </form>
+
+          {/* New Search Button */}
+          {data && (
+            <button
+              onClick={handleClear}
+              className="hidden md:flex items-center px-4 py-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors whitespace-nowrap"
+            >
+              New Search
+            </button>
+          )}
         </div>
       </div>
 
@@ -137,8 +177,8 @@ export default function Home() {
               <button
                 onClick={() => setActiveTab("report")}
                 className={`flex items-center px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'report'
-                    ? 'bg-red-600 text-white shadow-md'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                  ? 'bg-red-600 text-white shadow-md'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
                   }`}
               >
                 <FileText size={18} className="mr-2" />
@@ -147,8 +187,8 @@ export default function Home() {
               <button
                 onClick={() => setActiveTab("videos")}
                 className={`flex items-center px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'videos'
-                    ? 'bg-red-600 text-white shadow-md'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                  ? 'bg-red-600 text-white shadow-md'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
                   }`}
               >
                 <Youtube size={18} className="mr-2" />
