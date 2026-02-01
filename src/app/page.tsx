@@ -1,78 +1,93 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Search, Loader2, FileText, Youtube, PlayCircle, ExternalLink, Bot, Sparkles } from "lucide-react";
+import { Search, Loader2, FileText, Youtube, Menu, Bookmark, X, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import Image from "next/image";
+import VideoCard, { VideoResult } from "@/components/VideoCard";
+import HistorySidebar from "@/components/HistorySidebar";
 
-interface VideoResult {
-  id: string;
-  title: string;
-  url: string;
-  duration: string;
-  thumbnail: string;
-  channel: string;
-  views: number;
-  uploadedAt: string;
-}
-
+// Simplified API Response
 interface ResearchResponse {
-  report: string;
-  videos: VideoResult[];
-  debug_plan: any;
+  status: "success" | "ambiguous" | "error";
+  videos?: VideoResult[];
+  report?: string;
+  message?: string;
+  candidates?: VideoResult[]; // for fallback
 }
 
 export default function Home() {
+  // Core State
   const [topic, setTopic] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState("");
   const [data, setData] = useState<ResearchResponse | null>(null);
-  const [activeTab, setActiveTab] = useState<"report" | "videos">("report");
 
-  // Load persistence on mount
+  // Persistence State
+  const [savedVideos, setSavedVideos] = useState<VideoResult[]>([]);
+  const [history, setHistory] = useState<string[]>([]);
+
+  // UI State
+  const [activeTab, setActiveTab] = useState<"videos" | "report" | "saved">("videos");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Load Persistence
   useEffect(() => {
-    const savedData = localStorage.getItem("researchData");
-    const savedTopic = localStorage.getItem("researchTopic");
+    try {
+      const saved = localStorage.getItem("findmyyoutube_saved");
+      const hist = localStorage.getItem("findmyyoutube_history");
 
-    if (savedTopic) setTopic(savedTopic);
-
-    if (savedData) {
-      try {
-        setData(JSON.parse(savedData));
-      } catch (e) {
-        console.error("Failed to parse saved data");
-      }
+      if (saved) setSavedVideos(JSON.parse(saved));
+      if (hist) setHistory(JSON.parse(hist));
+    } catch (e) {
+      console.error("Failed to load persistence", e);
     }
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!topic.trim()) return;
+  // Save Persistence Changes
+  useEffect(() => {
+    localStorage.setItem("findmyyoutube_saved", JSON.stringify(savedVideos));
+  }, [savedVideos]);
 
+  useEffect(() => {
+    localStorage.setItem("findmyyoutube_history", JSON.stringify(history));
+  }, [history]);
+
+  const handleSubmit = async (e?: React.FormEvent, overrideTopic?: string) => {
+    if (e) e.preventDefault();
+    const searchTopic = overrideTopic || topic;
+    if (!searchTopic.trim()) return;
+
+    // Update History (Functions as a Set)
+    setHistory(prev => {
+      const newHist = [searchTopic, ...prev.filter(h => h !== searchTopic)].slice(0, 20);
+      return newHist;
+    });
+
+    setTopic(searchTopic);
     setLoading(true);
-    setActiveTab("report");
-
-    // Save topic early
-    localStorage.setItem("researchTopic", topic);
+    setActiveTab("videos");
+    setData(null);
 
     try {
-      setStatusText("🧠 Analyzing Topic & Planning...");
-      setTimeout(() => setStatusText("🌏 Deep Searching Web & YouTube..."), 2500);
-      setTimeout(() => setStatusText("📝 Synthesizing Report & Curating Videos..."), 8000);
+      setStatusText("🔍 Searching YouTube & Fetching Transcripts...");
+      // Simulate progress for UX
+      setTimeout(() => setStatusText("🧠 Filtering by 'Presence' ..."), 5000);
+      setTimeout(() => setStatusText("✨ AI Summarizing Top Results..."), 12000);
+
+      // Extract saved channels for personalization
+      const savedChannels = Array.from(new Set(savedVideos.map(v => v.channel)));
 
       const response = await fetch("/api/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic }),
+        body: JSON.stringify({
+          topic: searchTopic,
+          savedChannels
+        }),
       });
 
       const result = await response.json();
-      if (result.error) throw new Error(result.error);
-
       setData(result);
-      // Save full result
-      localStorage.setItem("researchData", JSON.stringify(result));
-
     } catch (error: any) {
       alert(`Research Failed: ${error.message}`);
     } finally {
@@ -84,191 +99,249 @@ export default function Home() {
     if (confirm("Start a new search? Current results will be cleared.")) {
       setData(null);
       setTopic("");
-      localStorage.removeItem("researchData");
-      localStorage.removeItem("researchTopic");
     }
   };
 
+  const toggleSave = (video: VideoResult) => {
+    setSavedVideos(prev => {
+      const exists = prev.find(v => v.id === video.id);
+      if (exists) {
+        return prev.filter(v => v.id !== video.id);
+      } else {
+        return [video, ...prev];
+      }
+    });
+  };
+
   return (
-    <main className="min-h-screen bg-black text-white font-sans selection:bg-red-900 selection:text-white">
+    <main className="min-h-screen bg-black text-white font-sans selection:bg-red-900 selection:text-white flex overflow-hidden">
 
-      {/* 
-        Hero / Search Section 
-        - Centered vertically if no data
-        - Top bar if data exists
-      */}
-      <div className={`w-full transition-all duration-500 ${data ? 'border-b border-gray-800 bg-black/50 backdrop-blur-md sticky top-0 z-40' : 'min-h-screen flex flex-col justify-center items-center'}`}>
-        <div className={`container mx-auto px-4 ${data ? 'py-4 flex flex-col md:flex-row items-center gap-4' : 'text-center max-w-2xl'}`}>
+      {/* Sidebar */}
+      <HistorySidebar
+        history={history}
+        onSelect={(t) => handleSubmit(undefined, t)}
+        onClear={() => setHistory([])}
+        isOpen={sidebarOpen}
+      />
 
-          {/* Logo Group */}
-          <div className={`flex items-center gap-2 ${data ? 'mr-6' : 'flex-col mb-8 gap-4'}`}>
-            <div className={`relative flex items-center justify-center bg-red-600 rounded-xl ${data ? 'w-10 h-10' : 'w-20 h-20 shadow-2xl shadow-red-900/50'}`}>
-              <Youtube size={data ? 20 : 40} className="text-white fill-current" />
+      {/* Main Layout */}
+      <div className={`flex-1 flex flex-col min-h-screen transition-all duration-300 relative ${sidebarOpen ? 'md:ml-72' : 'ml-0'}`}>
+
+        {/* Top Navigation / Search Bar */}
+        <header className={`w-full sticky top-0 z-40 border-b border-gray-800 bg-black/80 backdrop-blur-md transition-all`}>
+          <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-4">
+
+            <div className="flex items-center gap-6">
+              <button
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10"
+              >
+                <Menu size={20} />
+              </button>
+
+              <div onClick={handleClear} className="flex items-center gap-2 cursor-pointer group">
+                <div className="bg-red-600 rounded-lg p-1.5 group-hover:shadow-lg group-hover:shadow-red-900/50 transition-all">
+                  <Youtube size={20} className="text-white fill-current" />
+                </div>
+                <span className="font-bold text-lg tracking-tight hidden sm:block">
+                  FindMy<span className="text-red-500">YouTube</span>
+                </span>
+              </div>
             </div>
-            <h1 className={`font-bold tracking-tighter ${data ? 'text-xl' : 'text-5xl md:text-6xl'}`}>
-              FindMy<span className="text-red-500">YouTube</span>
-            </h1>
-            {!data && <p className="text-gray-400 text-lg md:text-xl font-light">Deep Research Agent & Curator</p>}
-          </div>
 
-          {/* Search Input Group */}
-          <form onSubmit={handleSubmit} className={`relative flex-1 ${data ? 'w-full max-w-2xl' : 'w-full mt-8'}`}>
-            <div className="relative group">
-              <input
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                className={`w-full bg-[#1a1a1a] text-white border border-gray-700 rounded-full focus:outline-none focus:border-red-500 focus:ring-2 focus:ring-red-900 transition-all placeholder-gray-500
-                        ${data ? 'py-2.5 pl-10 pr-4 text-sm' : 'py-4 pl-14 pr-16 text-lg shadow-lg'}`}
-                placeholder={data ? "Search new topic..." : "What do you want to research?"}
-                disabled={loading}
-              />
-              <Search className={`absolute text-gray-400 ${data ? 'left-3 top-2.5 w-4 h-4' : 'left-5 top-4.5 w-6 h-6'}`} />
-
-              {!data && (
+            {/* Search Bar - Compact when has data, Large when empty logic handled by layout below. 
+                Actually, let's keep it persistent in header for better UX 
+            */}
+            <form onSubmit={(e) => handleSubmit(e)} className="flex-1 max-w-xl mx-4">
+              <div className="relative group">
+                <input
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  className="w-full bg-[#1a1a1a] text-white border border-gray-700 rounded-full py-2 pl-4 pr-12 text-sm focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-all"
+                  placeholder="Search for videos (e.g., 'AX 현직자')..."
+                  disabled={loading}
+                />
                 <button
                   type="submit"
                   disabled={loading || !topic.trim()}
-                  className="absolute right-2 top-2 bg-red-600 hover:bg-red-700 text-white p-2 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="absolute right-1 top-1 bottom-1 bg-red-600 hover:bg-red-700 text-white px-3 rounded-full transition-colors flex items-center justify-center disabled:opacity-50"
                 >
-                  {loading ? <Loader2 className="animate-spin" size={20} /> : <Search size={20} />}
+                  {loading ? <Loader2 className="animate-spin" size={14} /> : <Search size={14} />}
                 </button>
-              )}
-            </div>
-          </form>
+              </div>
+            </form>
 
-          {/* New Search Button */}
-          {data && (
-            <button
-              onClick={handleClear}
-              className="hidden md:flex items-center px-4 py-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors whitespace-nowrap"
-            >
-              New Search
-            </button>
+            {/* Right Actions */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setActiveTab("saved")}
+                className={`relative p-2 rounded-lg transition-colors ${activeTab === 'saved' ? 'text-red-500 bg-white/10' : 'text-gray-400 hover:text-white'}`}
+              >
+                <Bookmark size={20} />
+                {savedVideos.length > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                )}
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Content Area */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8">
+
+          {/* Start Screen */}
+          {!data && !loading && savedVideos.length === 0 && (
+            <div className="h-[70vh] flex flex-col items-center justify-center text-center max-w-2xl mx-auto space-y-8 animate-in fade-in zoom-in duration-500">
+              <div className="w-24 h-24 bg-gradient-to-br from-red-600 to-red-900 rounded-3xl flex items-center justify-center shadow-2xl shadow-red-900/50 mb-4">
+                <Youtube size={48} className="text-white fill-current" />
+              </div>
+              <h1 className="text-5xl md:text-6xl font-bold tracking-tighter">
+                FindMy<span className="text-red-500">YouTube</span>
+              </h1>
+              <p className="text-xl text-gray-400 font-light leading-relaxed">
+                Precision Search with <span className="text-white font-medium">Transcript Verification</span>. <br />
+                Filters out noise. Boosts your saved channels.
+              </p>
+            </div>
+          )}
+
+          {/* Loading State */}
+          {loading && !data && (
+            <div className="h-[70vh] flex flex-col items-center justify-center">
+              <div className="flex flex-col items-center mb-8 animate-pulse">
+                <Youtube size={64} className="text-red-500 mb-4 fill-current" />
+                <h2 className="text-2xl font-bold bg-gradient-to-r from-white to-gray-500 bg-clip-text text-transparent">Deep Searching...</h2>
+              </div>
+              <div className="bg-[#1a1a1a] border border-gray-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+                <div className="flex items-center gap-4 mb-4">
+                  <Loader2 className="animate-spin text-red-500" size={24} />
+                  <span className="text-gray-300 font-medium">{statusText}</span>
+                </div>
+                <div className="w-full bg-gray-800 h-1.5 rounded-full overflow-hidden">
+                  <div className="h-full bg-red-600 animate-progressBar rounded-full"></div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ERROR / AMBIGUOUS STATE */}
+          {data?.status === 'ambiguous' && (
+            <div className="max-w-3xl mx-auto mt-10 animate-in fade-in">
+              <div className="bg-[#1a1a1a] border border-yellow-800/50 p-8 rounded-3xl text-center">
+                <div className="inline-flex p-3 bg-yellow-900/20 rounded-full mb-4">
+                  <AlertTriangle size={32} className="text-yellow-500" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2">Search results are ambiguous</h2>
+                <p className="text-gray-400 mb-6 text-lg">{data.message}</p>
+
+                <div className="text-sm text-gray-500 mb-8">
+                  We found {data.candidates?.length} potential videos, but none met the strict keyword criteria.
+                  <br />Try searching for <strong>"{topic} Lecture"</strong> or <strong>"{topic} Tutorial"</strong> instead.
+                </div>
+
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={() => handleSubmit(undefined, topic + " Lecture")}
+                    className="px-5 py-2 bg-gray-800 hover:bg-gray-700 rounded-full text-sm font-medium transition-colors"
+                  >
+                    Try "{topic} Lecture"
+                  </button>
+                  <button
+                    onClick={() => handleSubmit(undefined, topic + " Tutorial")}
+                    className="px-5 py-2 bg-gray-800 hover:bg-gray-700 rounded-full text-sm font-medium transition-colors"
+                  >
+                    Try "{topic} Tutorial"
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+
+          {/* Results */}
+          {((data?.status === 'success' && !loading) || activeTab === 'saved') && (
+            <div className="max-w-7xl mx-auto">
+              {/* Tab Navigation */}
+              <div className="flex justify-center mb-8 sticky top-0 z-30 pt-4 pb-2 bg-gradient-to-b from-black via-black to-transparent">
+                <nav className="flex space-x-1 bg-[#1a1a1a] p-1 rounded-full border border-gray-800 shadow-2xl">
+                  <button
+                    onClick={() => setActiveTab("videos")}
+                    className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'videos' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    Verified Videos <span className="ml-1 opacity-70">({data?.videos?.length || 0})</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("report")}
+                    className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'report' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    Report
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("saved")}
+                    className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'saved' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    Saved <span className="ml-1 opacity-70">({savedVideos.length})</span>
+                  </button>
+                </nav>
+              </div>
+
+              <div className="animate-in slide-in-from-bottom-5 fade-in duration-500">
+                {/* Tab 1: VIDEOS */}
+                {activeTab === "videos" && data?.videos && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {data.videos.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        isSaved={savedVideos.some(v => v.id === video.id)}
+                        onToggleSave={toggleSave}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {/* Tab 2: REPORT */}
+                {activeTab === "report" && (
+                  <div className="max-w-4xl mx-auto bg-[#111] border border-gray-800 rounded-3xl p-8 md:p-12 shadow-2xl animate-in slide-in-from-bottom-5">
+                    <div className="prose prose-invert prose-red max-w-none">
+                      {data?.report ? (
+                        <ReactMarkdown>{data.report}</ReactMarkdown>
+                      ) : (
+                        <div className="text-center py-20 text-gray-500">
+                          <FileText size={48} className="mx-auto mb-4 opacity-50" />
+                          <p className="text-xl">No report generated for this search.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Tab 3: SAVED */}
+                {activeTab === "saved" && (
+                  savedVideos.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {savedVideos.map((video) => (
+                        <VideoCard
+                          key={video.id}
+                          video={video}
+                          isSaved={true}
+                          onToggleSave={toggleSave}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-20 text-gray-500">
+                      <Bookmark size={48} className="mx-auto mb-4 opacity-50" />
+                      <p className="text-xl">No saved videos yet.</p>
+                      <button onClick={() => setActiveTab("videos")} className="text-red-500 hover:underline mt-2">Go find some!</button>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
-
-      {/* Loading Overlay (Only when initial loading) */}
-      {loading && !data && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/90 backdrop-blur-sm">
-          <div className="flex flex-col items-center mb-8 animate-pulse">
-            <Youtube size={64} className="text-red-500 mb-4 fill-current" />
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-white to-gray-500 bg-clip-text text-transparent">Researching...</h2>
-          </div>
-          <div className="bg-[#1a1a1a] border border-gray-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-            <div className="flex items-center gap-4 mb-4">
-              <Loader2 className="animate-spin text-red-500" size={24} />
-              <span className="text-gray-300 font-medium">{statusText}</span>
-            </div>
-            <div className="w-full bg-gray-800 h-1.5 rounded-full overflow-hidden">
-              <div className="h-full bg-red-600 animate-progressBar rounded-full"></div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Results Content */}
-      {data && !loading && (
-        <div className="container mx-auto px-4 py-8 animate-in fade-in duration-500">
-
-          {/* Tab Navigation */}
-          <div className="flex justify-center mb-10">
-            <nav className="flex space-x-2 bg-[#1a1a1a] p-1 rounded-xl border border-gray-800">
-              <button
-                onClick={() => setActiveTab("report")}
-                className={`flex items-center px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'report'
-                  ? 'bg-red-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-white/5'
-                  }`}
-              >
-                <FileText size={18} className="mr-2" />
-                Report
-              </button>
-              <button
-                onClick={() => setActiveTab("videos")}
-                className={`flex items-center px-6 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'videos'
-                  ? 'bg-red-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-white/5'
-                  }`}
-              >
-                <Youtube size={18} className="mr-2" />
-                Videos
-                <span className="ml-2 bg-black/20 px-2 py-0.5 rounded-full text-xs font-bold">
-                  {data.videos.length}
-                </span>
-              </button>
-            </nav>
-          </div>
-
-          {/* Main Content Area */}
-          <div className="max-w-6xl mx-auto min-h-[50vh]">
-
-            {/* Tab 1: Research Report */}
-            {activeTab === "report" && (
-              <article className="bg-[#111] border border-gray-800 rounded-3xl p-8 md:p-12 shadow-2xl animate-in slide-in-from-bottom-2 fade-in duration-300">
-                <div className="prose prose-invert prose-lg max-w-none 
-                            prose-headings:font-bold prose-h1:text-3xl prose-h2:text-white prose-h2:text-2xl prose-h2:mt-8 prose-h2:mb-4
-                            prose-h3:text-gray-200 prose-h3:text-xl
-                            prose-p:text-gray-400 prose-p:leading-relaxed
-                            prose-li:text-gray-400
-                            prose-strong:text-white
-                            prose-a:text-red-400 prose-a:no-underline hover:prose-a:underline
-                            prose-blockquote:border-l-4 prose-blockquote:border-red-600 prose-blockquote:bg-gray-900/50 prose-blockquote:py-1 prose-blockquote:px-4 prose-blockquote:not-italic
-                        ">
-                  <ReactMarkdown>{data.report}</ReactMarkdown>
-                </div>
-              </article>
-            )}
-
-            {/* Tab 2: Curated Videos */}
-            {activeTab === "videos" && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in slide-in-from-bottom-2 fade-in duration-300">
-                {data.videos.map((video) => (
-                  <div key={video.id} className="group bg-[#111] border border-gray-800 rounded-2xl overflow-hidden hover:border-red-600/50 transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-xl shadow-black/50">
-                    {/* Thumbnail Section */}
-                    <div className="relative aspect-video bg-gray-900 group-hover:scale-[1.02] transition-transform duration-500 origin-center">
-                      {video.thumbnail && (
-                        <Image
-                          src={video.thumbnail}
-                          alt={video.title}
-                          fill
-                          className="object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                        />
-                      )}
-                      <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60"></div>
-                      <span className="absolute bottom-2 right-2 bg-black/80 text-white text-xs font-bold px-1.5 py-0.5 rounded border border-white/10">
-                        {video.duration}
-                      </span>
-                      <a href={video.url} target="_blank" className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-black/30 backdrop-blur-[1px]">
-                        <PlayCircle size={48} className="text-white drop-shadow-xl" fill="currentColor" />
-                      </a>
-                    </div>
-
-                    {/* Info Section */}
-                    <div className="p-4">
-                      <h3 className="text-white font-semibold leading-snug line-clamp-2 mb-2 group-hover:text-red-500 transition-colors">
-                        {video.title}
-                      </h3>
-                      <div className="flex items-center justify-between text-xs text-gray-500 mb-4">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-5 h-5 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white overflow-hidden">
-                            {video.channel[0]}
-                          </div>
-                          <span>{video.channel}</span>
-                        </div>
-                        <span>{video.uploadedAt}</span>
-                      </div>
-                      <a href={video.url} target="_blank" className="block w-full text-center py-2 rounded-lg bg-gray-800 hover:bg-red-600 text-gray-300 hover:text-white text-sm font-medium transition-colors">
-                        Open Video
-                      </a>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </main>
   );
 }

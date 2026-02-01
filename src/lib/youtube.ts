@@ -1,9 +1,12 @@
 import YouTube from "youtube-sr";
 import { YoutubeTranscript } from "youtube-transcript";
+import { spawn } from "child_process";
+import path from "path";
 
 export interface VideoResult {
     id: string;
     title: string;
+    description?: string;
     url: string;
     duration: string;
     thumbnail: string;
@@ -12,6 +15,62 @@ export interface VideoResult {
     uploadedAt: string;
     uploadedDate?: Date;
     transcript?: string;
+    score?: number;
+    reasoning?: string;
+    missed?: string[];
+    analysis?: {
+        subtitle: string;
+        summary: string[];
+    } | null;
+}
+
+export async function searchOfficialYoutube(query: string, maxResults: number = 50): Promise<VideoResult[]> {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    if (!apiKey || apiKey === "YOUR_YOUTUBE_API_KEY") {
+        console.warn("YOUTUBE_API_KEY is missing or default. Falling back to youtube-sr.");
+        return searchVideos(query, maxResults);
+    }
+
+    try {
+        let allResults: any[] = [];
+        let nextPageToken = "";
+        const iterations = Math.ceil(maxResults / 50);
+
+        for (let i = 0; i < iterations; i++) {
+            const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${Math.min(50, maxResults - allResults.length)}&key=${apiKey}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
+
+            const res = await fetch(url);
+            const data = await res.json();
+
+            if (data.error) {
+                console.error("YouTube API Error:", data.error);
+                break;
+            }
+
+            if (data.items) {
+                allResults.push(...data.items);
+            }
+
+            nextPageToken = data.nextPageToken;
+            if (!nextPageToken || allResults.length >= maxResults) break;
+        }
+
+        return allResults.map(item => ({
+            id: item.id.videoId,
+            title: item.snippet.title,
+            description: item.snippet.description,
+            url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+            duration: "",
+            thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
+            channel: item.snippet.channelTitle,
+            views: 0,
+            uploadedAt: item.snippet.publishedAt,
+            uploadedDate: new Date(item.snippet.publishedAt)
+        }));
+    } catch (error) {
+        console.error("Official YouTube Search Error:", error);
+        return [];
+    }
 }
 
 export async function searchVideos(query: string, maxResults: number = 20): Promise<VideoResult[]> {
@@ -22,7 +81,7 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
         console.log(`Searching for: ${query} (Limit: ${monthLimit} months)`);
 
         const videos = await YouTube.search(query, {
-            limit: 30, // Fetch more to increase chance of matching date filter
+            limit: Math.max(30, maxResults * 1.5),
             type: "video",
             safeSearch: false
         });
@@ -32,7 +91,6 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
                 if (!v.id) return null;
                 const videoDate = parseRelativeDate(v.uploadedAt);
 
-                // If parsable, check date
                 if (videoDate) {
                     if (videoDate >= limitDate) {
                         return {
@@ -48,7 +106,6 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
                         } as VideoResult;
                     }
                 } else {
-                    // Fallback for very recent formats or unparsable
                     if (v.uploadedAt && (v.uploadedAt.includes("hour") || v.uploadedAt.includes("day") || v.uploadedAt.includes("week"))) {
                         return {
                             id: v.id,
@@ -59,7 +116,7 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
                             channel: v.channel?.name || "",
                             views: v.views || 0,
                             uploadedAt: v.uploadedAt || "",
-                            uploadedDate: new Date() // Treat as now
+                            uploadedDate: new Date()
                         } as VideoResult;
                     }
                 }
@@ -69,7 +126,6 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
 
         let filtered = filterVideos(new Date(new Date().setMonth(new Date().getMonth() - monthLimit)));
 
-        // Fallback: If 0 results and NOT in strict "Latest" mode, relax to 12 months (1 year)
         if (filtered.length === 0 && !isLatest) {
             console.log("Strict filter returned 0 results. Relaxing to 12 months...");
             const relaxedCutoff = new Date();
@@ -77,7 +133,6 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
             filtered = filterVideos(relaxedCutoff);
         }
 
-        // Fallback 2: If still 0, just take the top 5 regardless of date (to show SOMETHING)
         if (filtered.length === 0) {
             console.log("Relaxed filter returned 0 results. Returning top 5 regardless of date.");
             filtered = videos.slice(0, 5).map(v => ({
@@ -100,14 +155,42 @@ export async function searchVideos(query: string, maxResults: number = 20): Prom
 }
 
 export async function getTranscript(videoId: string): Promise<string | null> {
-    try {
-        const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
-        if (!transcriptItems || transcriptItems.length === 0) return null;
-        return transcriptItems.map((item: any) => item.text).join(" ");
-    } catch (error) {
-        console.warn(`No transcript for video ${videoId}`);
-        return null;
-    }
+    const scriptPath = path.resolve(process.cwd(), "src/scripts/get_transcript.py");
+
+    return new Promise((resolve) => {
+        const pythonProcess = spawn("python3", [scriptPath, videoId]);
+
+        let dataString = "";
+
+        pythonProcess.stdout.on("data", (data: Buffer) => {
+            dataString += data.toString();
+        });
+
+        pythonProcess.stderr.on("data", (data: Buffer) => {
+            // console.error(`Python Error: ${data}`); // Optional: Log python errors
+        });
+
+        pythonProcess.on("close", (code: number) => {
+            if (code !== 0) {
+                console.warn(`Python script exited with code ${code} for video ${videoId}`);
+                resolve(null);
+                return;
+            }
+
+            try {
+                const result = JSON.parse(dataString);
+                if (result.success) {
+                    resolve(result.transcript);
+                } else {
+                    console.warn(`Python transcript fetch failed: ${result.error}`);
+                    resolve(null);
+                }
+            } catch (e) {
+                console.error("Failed to parse Python output", e);
+                resolve(null);
+            }
+        });
+    });
 }
 
 function parseRelativeDate(dateStr?: string): Date | null {
@@ -116,18 +199,17 @@ function parseRelativeDate(dateStr?: string): Date | null {
     const now = new Date();
     const str = dateStr.toLowerCase().trim();
 
-    // "2 days ago", "1 month ago", "3 years ago"
     try {
         const parts = str.split(" ");
         if (parts.length < 2) return null;
 
         const val = parseInt(parts[0]);
-        const unit = parts[1]; // hours, days, months, years...
+        const unit = parts[1];
 
         if (isNaN(val)) return null;
 
         if (unit.startsWith("second") || unit.startsWith("minute") || unit.startsWith("hour")) {
-            return now; // Very recent
+            return now;
         }
         if (unit.startsWith("day")) {
             const d = new Date();

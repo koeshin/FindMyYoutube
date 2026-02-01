@@ -1,171 +1,183 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextResponse } from "next/server";
-import { tavily } from "@tavily/core";
-import { searchVideos } from "@/lib/youtube";
+import { getTranscript, searchOfficialYoutube, VideoResult } from "@/lib/youtube";
 
-export const maxDuration = 60; // Allow long running for research
+export const maxDuration = 60; // Allow long running for batch processing
 
-// Initialize Tavily
-const tavilyClient = process.env.TAVILY_API_KEY ? tavily({ apiKey: process.env.TAVILY_API_KEY }) : null;
+// Helper: Calculate metadata-only score for 1st stage ranking (fast)
+function calculateMetadataScore(v: VideoResult, topic: string, savedChannels: string[]): number {
+    const lowerTitle = v.title.toLowerCase();
+    const keywords = topic.toLowerCase().split(' ').filter(k => k.length > 1);
+
+    let score = 0;
+    keywords.forEach(k => {
+        if (lowerTitle.includes(k)) score += 10;
+    });
+
+    if (savedChannels.includes(v.channel)) score += 30;
+
+    return score;
+}
+
+// Helper: Calculate deep relevance score from transcript or description
+function calculateDeepScore(text: string, topic: string, channel: string, savedChannels: string[]): { score: number, reasoning: string, missed: string[] } {
+    const lowerText = text.toLowerCase();
+    const keywords = topic.toLowerCase().split(' ').filter(k => k.length > 1);
+
+    const missedKeywords = keywords.filter(k => !lowerText.includes(k));
+    const hitRatio = (keywords.length - missedKeywords.length) / keywords.length;
+
+    // Keyword Density
+    const density = keywords.reduce((acc, k) => acc + (lowerText.split(k).length - 1), 0);
+    const isSaved = savedChannels.includes(channel);
+
+    let score = 0;
+    let reasoningParts = [];
+
+    if (missedKeywords.length === 0) {
+        score += 50;
+        reasoningParts.push("Exact Match");
+    } else if (hitRatio >= 0.5) {
+        score += 30;
+        reasoningParts.push("Partial Match");
+    } else if (hitRatio > 0) {
+        score += 10;
+        reasoningParts.push("Weak Match");
+    }
+
+    if (density > 5) {
+        score += Math.min(density, 20);
+        reasoningParts.push("High Density");
+    }
+
+    if (isSaved) {
+        score += 30;
+        reasoningParts.push("Saved Channel");
+    }
+
+    if (text.length < 200) score -= 40;
+
+    return { score, reasoning: reasoningParts.join(", ") || "Filtered", missed: missedKeywords };
+}
 
 export async function POST(req: Request) {
     try {
-        const { topic, tavilyKey } = await req.json();
-
-        if (!topic) {
-            return NextResponse.json({ error: "Topic is required" }, { status: 400 });
-        }
-
-        // Use provided key or env key
-        const activeTavilyKey = tavilyKey || process.env.TAVILY_API_KEY;
-        if (!activeTavilyKey) {
-            return NextResponse.json({ error: "Tavily API Key is required" }, { status: 401 });
-        }
-
-        // Re-init client if key provided in request
-        const tvly = tavilyKey ? tavily({ apiKey: tavilyKey }) : tavilyClient;
-        if (!tvly) {
-            return NextResponse.json({ error: "Failed to initialize Search Client" }, { status: 500 });
-        }
+        const { topic, savedChannels = [] } = await req.json();
+        if (!topic) return NextResponse.json({ error: "Topic required" }, { status: 400 });
 
         const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            return NextResponse.json({ error: "Gemini API Key not configured" }, { status: 500 });
-        }
+        if (!apiKey) return NextResponse.json({ error: "No Gemini API Key" }, { status: 500 });
 
-        // Initialize Gemini
         const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-        // Note: User requested "gemini-3-flash" for everything.
-        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+        console.log(`[Batch Pipeline] Searching for: ${topic}`);
 
-        const today = new Date().toISOString().split('T')[0];
+        // Step 1: Broad Search (100 Results)
+        const candidates = await searchOfficialYoutube(topic, 100);
+        console.log(`[Batch Pipeline] Found ${candidates.length} candidates.`);
 
-        // --- Step 1: Planner ---
-        console.log("Step 1: Planning...");
-        const planPrompt = `
-        You are a Deep Research Planner.
-        User Query: "${topic}"
-        Current Date: ${today}
-        
-        Goal: Decompose this query into a research plan.
-        1. Generate 5 distinct, high-quality search queries for a search engine (Tavily) to gather comprehensive information.
-        2. Generate 1 specific keyword/phrase to search for relevant YouTube videos.
-        
-        Return JSON ONLY:
-        {
-            "search_queries": ["query1", "query2", ...],
-            "video_keyword": "keyword"
-        }
-        `;
+        // Step 2: Metadata Pre-Ranking (Pick top 40)
+        const preRanked = candidates.map(v => ({
+            ...v,
+            preScore: calculateMetadataScore(v, topic, savedChannels)
+        })).sort((a, b) => b.preScore - a.preScore).slice(0, 40);
 
-        const planResult = await model.generateContent(planPrompt);
-        const text = planResult.response.text();
+        // Step 3: Deep Verification (Transcript with Description Fallback)
+        const verified = await Promise.all(preRanked.map(async (v) => {
+            try {
+                let transcript = await getTranscript(v.id);
+                let usedFallback = false;
 
-        // Robust JSON extraction
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-            console.error("Failed to parse JSON Plan:", text);
-            throw new Error("Invalid JSON format from Planner");
-        }
+                if (!transcript || transcript.length < 300) {
+                    transcript = v.description || "No content available.";
+                    usedFallback = true;
+                }
 
-        const plan = JSON.parse(jsonMatch[0]);
+                const { score, reasoning, missed } = calculateDeepScore(transcript, topic, v.channel, savedChannels);
 
-        console.log("Plan:", plan);
+                return {
+                    ...v,
+                    transcript,
+                    score: usedFallback ? score - 5 : score,
+                    reasoning: usedFallback ? `${reasoning} (Desc Fallback)` : reasoning,
+                    missed
+                };
+            } catch (e) {
+                return { ...v, score: -20, reasoning: "Error", transcript: "", missed: [] };
+            }
+        }));
 
-        // --- Step 2: Executor (Parallel Search) ---
-        console.log("Step 2: Executing Search...");
+        // Step 4: Final SELECTION (Top 10) - Reduced from 20 to avoid Gemini 15 RPM Rate Limit
+        const topSelections = verified
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10);
 
-        // A. Tavily Search
-        const searchPromises = plan.search_queries.map((q: string) =>
-            tvly.search(q, {
-                search_depth: "advanced",
-                max_results: 3,
-                include_answer: true
-            }).catch(e => ({ results: [], answer: "" }))
-        );
+        console.log(`[Batch Pipeline] Analysis starting for top 20.`);
 
-        // B. YouTube Search (Top 10 as requested)
-        const videoPromise = searchVideos(plan.video_keyword, 10);
+        // Step 5: BATCHED AI Analysis (To avoid Rate Limits)
+        // We will process individual summaries and global report in sequential/small batches
+        const batchSize = 5;
+        const analyzedVideos: any[] = [];
 
-        const [searchResults, videoResults] = await Promise.all([
-            Promise.all(searchPromises),
-            videoPromise
-        ]);
-
-        // Aggregate Context
-        let researchContext = `Report Date: ${today}\n\n`;
-
-        // Add Plan to Context
-        researchContext += `=== RESEARCH STRATEGY ===\n`;
-        researchContext += `Search Queries: ${plan.search_queries.join(', ')}\n`;
-        researchContext += `Video Keyword: ${plan.video_keyword}\n\n`;
-
-        // Add Web Results
-        researchContext += `=== WEB SEARCH RESULTS ===\n`;
-        searchResults.forEach((res: any, idx: number) => {
-            researchContext += `\n--- Query: ${plan.search_queries[idx]} ---\n`;
-            if (res.answer) researchContext += `AI Answer: ${res.answer}\n`;
-            res.results.forEach((r: any) => {
-                researchContext += `Title: ${r.title}\nURL: ${r.url}\nContent: ${r.content}\n\n`;
+        for (let i = 0; i < topSelections.length; i += batchSize) {
+            const currentBatch = topSelections.slice(i, i + batchSize);
+            const batchPromises = currentBatch.map(async (v) => {
+                const prompt = `
+                Video: "${v.title}"
+                Content: "${v.transcript.substring(0, 10000)}"
+                Task: Create a news-style subtitle and a 3-point summary.
+                Return pure JSON: { "subtitle": "...", "summary": ["...", "...", "..."] }
+                `;
+                try {
+                    const res = await model.generateContent(prompt);
+                    const text = res.response.text();
+                    const jsonMatch = text.match(/\{[\s\S]*\}/);
+                    return { ...v, analysis: jsonMatch ? JSON.parse(jsonMatch[0]) : null };
+                } catch (e) {
+                    console.error(`Gemini Individual Analysis Error for ${v.id}:`, e);
+                    return { ...v, analysis: null };
+                }
             });
-        });
+            const results = await Promise.all(batchPromises);
+            analyzedVideos.push(...results);
 
-        // Add Video Results to Context (Requested feature)
-        researchContext += `\n=== YOUTUBE VIDEO CONTEXT ===\n`;
-        videoResults.forEach((v: any) => {
-            researchContext += `Video Title: ${v.title}\nChannel: ${v.channel}\nPublished: ${v.uploadedAt}\nLink: ${v.url}\n\n`;
-        });
-
-        // TRUNCATION (Increased slightly as videos add text)
-        if (researchContext.length > 30000) {
-            console.log(`Context too large (${researchContext.length}), truncating to 30k chars...`);
-            researchContext = researchContext.substring(0, 30000) + "\n...(Truncated)...";
+            // Subtle delay between batches if needed, but for Flash 5 is usually safe
+            if (i + batchSize < topSelections.length) {
+                await new Promise(r => setTimeout(r, 500));
+            }
         }
 
-        // --- Step 3: Writer ---
-        console.log("Step 3: Writing Report...");
-        const writePrompt = `
-        You are a detailed Research Analyst and Writer.
-        User Query: "${topic}"
-        Date: ${today}
-        
-        Research Context:
-        ${researchContext}
-        
-        Task: Write a comprehensive, professional Markdown report.
-        
-        Requirements:
-        1. **Header**: Start with a Metadata block (Date, Topic, Research Strategy Summary).
-        2. **Research Strategy**: Briefly explain the approach taken (the queries used) so the reader understands the scope.
-        3. **Integration**: You MUST integrate findings from BOTH the Web Search Results AND the YouTube Video Context.
-           - When citing a web page, use [Title](URL).
-           - When citing a video, use [Video: Title](URL).
-        4. **Structure**: 
-           - Executive Summary
-           - Key Findings (Grouped logically)
-           - Market/Technical Analysis
-           - **Video Highlights**: A dedicated section summarizing key insights derived specifically from the video list provided.
-           - Conclusion
-        5. **Length**: Detailed and substantial.
-        
-        Start immediately with the markdown content.
+        // Global Report Synthesis (Uses top 5 verified content)
+        console.log(`[Batch Pipeline] Synthesizing Global Report...`);
+        const reportPrompt = `
+        Topic: "${topic}"
+        Context: The following are the most relevant findings from YouTube videos.
+        Findings:
+        ${topSelections.slice(0, 5).map(v => `- [${v.title}]: ${v.transcript.substring(0, 3000)}`).join('\n')}
+
+        Task: Create a comprehensive "Research Report" in Markdown.
+        Include sections: # Overview, ## Key Insights, ## Critical Gaps, ## Recommendations.
+        Keep it professional, evidence-based, and concise.
         `;
 
-        const writeResult = await model.generateContent(writePrompt);
-        const report = writeResult.response.text();
+        let reportData = "Report generation failed.";
+        try {
+            const reportRes = await model.generateContent(reportPrompt);
+            reportData = reportRes.response.text();
+        } catch (e: any) {
+            console.error("Gemini Global Report Error:", e);
+            reportData = `Report generation failed: ${e.message || "Internal Error"}`;
+        }
 
         return NextResponse.json({
-            report,
-            videos: videoResults,
-            debug_plan: plan
+            status: "success",
+            videos: analyzedVideos,
+            report: reportData
         });
 
-    } catch (error) {
-        console.error("Research Error:", error);
-        return NextResponse.json(
-            { error: "Failed to complete research." },
-            { status: 500 }
-        );
+    } catch (error: any) {
+        console.error("Batch Research Error:", error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
     }
 }
